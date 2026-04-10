@@ -177,19 +177,43 @@ const CheckCurrencyArgs = z.object({
   reference: z.string().min(1),
 });
 
-// --- Helper ---
+// --- Helpers ---
 
-function textContent(data: unknown) {
+function responseMeta() {
   return {
-    content: [
-      { type: "text" as const, text: JSON.stringify(data, null, 2) },
-    ],
+    disclaimer:
+      "Derived from Central Bank of Ireland (CBI) regulatory publications. For informational purposes only — not legal advice. Verify at https://www.centralbank.ie/regulation/",
+    data_age: "~2025-04-01",
+    copyright: "© Central Bank of Ireland",
+    source_url: "https://www.centralbank.ie/regulation/",
   };
 }
 
-function errorContent(message: string) {
+function textContent(data: unknown) {
+  const payload =
+    typeof data === "object" && data !== null
+      ? { ...(data as object), _meta: responseMeta() }
+      : { data, _meta: responseMeta() };
   return {
-    content: [{ type: "text" as const, text: message }],
+    content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+  };
+}
+
+function errorContent(
+  message: string,
+  errorType: "not_found" | "tool_error" = "tool_error",
+) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(
+          { error: message, _error_type: errorType, _meta: responseMeta() },
+          null,
+          2,
+        ),
+      },
+    ],
     isError: true as const,
   };
 }
@@ -212,12 +236,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case "ie_fin_search_regulations": {
         const parsed = SearchRegulationsArgs.parse(args);
-        const results = searchProvisions({
+        const rawResults = searchProvisions({
           query: parsed.query,
           sourcebook: parsed.sourcebook,
           status: parsed.status,
           limit: parsed.limit,
         });
+        const results = rawResults.map((r) => ({
+          ...r,
+          _citation: buildCitation(
+            `${r.sourcebook_id} ${r.reference}`,
+            String(r.title ?? `${r.sourcebook_id} ${r.reference}`),
+            "ie_fin_get_regulation",
+            { sourcebook: r.sourcebook_id, reference: r.reference },
+          ),
+        }));
         return textContent({ results, count: results.length });
       }
 
@@ -227,6 +260,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!provision) {
           return errorContent(
             `Provision not found: ${parsed.sourcebook} ${parsed.reference}`,
+            "not_found",
           );
         }
         const prov = provision as Record<string, unknown>;
@@ -248,11 +282,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "ie_fin_search_enforcement": {
         const parsed = SearchEnforcementArgs.parse(args);
-        const results = searchEnforcement({
+        const rawEnforcement = searchEnforcement({
           query: parsed.query,
           action_type: parsed.action_type,
           limit: parsed.limit,
         });
+        const results = rawEnforcement.map((r) => ({
+          ...r,
+          _citation: buildCitation(
+            r.firm_name,
+            r.firm_name,
+            "ie_fin_search_enforcement",
+            { query: r.firm_name },
+          ),
+        }));
         return textContent({ results, count: results.length });
       }
 
@@ -278,7 +321,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return errorContent(`Error executing ${name}: ${message}`);
+    return errorContent(`Error executing ${name}: ${message}`, "tool_error");
   }
 });
 
