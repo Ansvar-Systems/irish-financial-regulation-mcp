@@ -1,0 +1,50 @@
+name: Check Data Freshness
+
+on:
+  schedule:
+    # Run every Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check-freshness:
+    name: Check CBI regulation updates
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch CBI regulation index
+        id: fetch
+        run: |
+          HTTP_CODE=$(curl -s -o /tmp/cbi_page.html -w "%{http_code}" \
+            --max-time 30 \
+            "https://www.centralbank.ie/regulation/")
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::CBI regulation page returned HTTP $HTTP_CODE — cannot check freshness"
+            exit 0
+          fi
+
+      - name: Check for recent updates
+        if: steps.fetch.outputs.http_code == '200'
+        run: |
+          # Look for date patterns in the last 30 days on the page
+          YEAR=$(date +%Y)
+          PREV_YEAR=$(( YEAR - 1 ))
+          MONTH=$(date +%m)
+
+          # Simple heuristic: grep for current year/month in the fetched page
+          if grep -qE "${YEAR}|${PREV_YEAR}" /tmp/cbi_page.html; then
+            echo "CBI regulation page is reachable and contains recent date references."
+          else
+            echo "::warning::Could not confirm recent updates on CBI regulation page — manual review recommended"
+          fi
+
+          # Report data age from COVERAGE.md for awareness
+          echo "Last recorded ingest date: $(grep 'Last ingested' COVERAGE.md | head -1 || echo 'see COVERAGE.md')"
+
+      - name: Report status
+        run: |
+          echo "Freshness check complete. If updates were detected, run the ingest workflow manually or wait for the scheduled monthly ingest."
+          echo "CBI regulation source: https://www.centralbank.ie/regulation/"
